@@ -19,14 +19,10 @@ import json
 import time
 import os
 from dotenv import load_dotenv
+import docx2txt
 
-
-load_dotenv(".env.py")
+load_dotenv(".env")
 openai_key = os.getenv("OPENAI_API_KEY")
-
-
-#sample_contract_path = './assets/Complete_with_DocuSign_MSA-Exafluence-UnicaT.pdf'
-#sample_checklist_path = './assets/ChecklistTest.xlsx'
 
 external_stylesheets = [
     dbc.themes.BOOTSTRAP,
@@ -38,7 +34,7 @@ table_header_color = '#427D9D'
 border_color = '#9BBEC8'
 #pie_chart_colors = ['#164863', '#9BBEC8']
 
-pie_chart_colors = ['#ff4757','#164863']
+pie_chart_colors = ['#164863','#ff4757']
 # Initialize Dash app
 app = dash.Dash(__name__, external_stylesheets=external_stylesheets, suppress_callback_exceptions=True)
 
@@ -362,52 +358,6 @@ def get_total_pages_from_pdf(pdf_content):
         print(f"An error occurred: {e}")
         return None
 
-def parse_openai_response(response_text):
-    try:
-        # Find the index where the JSON content begins
-        json_start_index = response_text.find("{")
-        
-        # Check if JSON content is found
-        if json_start_index != -1:
-            # Extract the JSON content
-            json_content = response_text[json_start_index:]
-            
-            # Remove any trailing characters after the JSON
-            json_content = json_content.rstrip('\n').rstrip('```')
-            
-            # Parse the JSON
-            response_data = json.loads(json_content)
-        else:
-            raise ValueError("No JSON content found in the response.")
-    except json.JSONDecodeError as e:
-        print(f"Error parsing JSON: {e}")
-        return pd.DataFrame(columns=['S.No', 'Document Type', 'Status', 'Section Number', 'Category', 'Checklist Item', 'Item type', 'Analysis', 'Suggestions', 'Priority'])
-
-    serial_no = 1
-    rows = []
-
-    for  item,details in response_data.items():
-        checklist_item_part = item.split(": ")[-1]
-        row = {
-             "S.No": details.get("S.No", ""),
-            "Document Type": details.get("Document Type", ""),
-            "Status": details.get("Status", ""),
-            "Section Number": details.get("Section Number", "") if details.get("Section Number") is not None else "",
-            "Category": details.get("Category", ""),
-            "Checklist Item": details.get("Checklist Item", ""),
-            "Item type": details.get("Item type", ""),
-            "Analysis": details.get("Analysis", ""),
-            "Suggestions": details.get("Suggestions", ""),
-            "Priority": details.get("Priority", "")
-        }
-        print("checklist items:",checklist_item_part)
-        rows.append(row)
-        serial_no += 1
-
-    df = pd.DataFrame(rows)
-    print(df)
-    return df
-
 def log_time(log_message, log_file_path='timelogs.txt'):
     with open(log_file_path, 'a') as log_file:
         current_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -415,6 +365,56 @@ def log_time(log_message, log_file_path='timelogs.txt'):
         log_entry = f"{current_time} - {log_message}\n"
         log_file.write(log_entry)
         log_file.write("................")
+
+# Process Document Content
+def process_document_content(file_contents, filename):
+    try:
+        _, file_extension = os.path.splitext(filename)
+        if file_extension.lower() == '.pdf':
+            return process_pdf_content(file_contents)
+        elif file_extension.lower() == '.docx':
+            return process_docx_content(file_contents)
+        elif file_extension.lower() in ['.txt', '.text']:
+            return process_text_content(file_contents)
+        # Add more conditions for other file types if needed
+        else:
+            print("Unsupported file format")
+            return None
+    except Exception as e:
+        print(f"Error processing document: {e}")
+        return None
+
+# Process PDF Content
+def process_pdf_content(pdf_data):
+    try:
+        doc = fitz.open(stream=pdf_data, filetype="pdf")
+        text = ""
+        for page_number in range(doc.page_count):
+            page = doc[page_number]
+            text += page.get_text()
+        return text
+    except Exception as e:
+        print(f"Error processing PDF: {e}")
+        return None
+
+# Process DOCX Content
+def process_docx_content(docx_data):
+    try:
+        text = docx2txt.process(io.BytesIO(docx_data))
+        return text
+    except Exception as e:
+        print(f"Error processing DOCX: {e}")
+        return None
+
+# Process Text Content (TXT)
+def process_text_content(text_data):
+    try:
+        return text_data.decode('utf-8')  # Assuming text_data is encoded in UTF-8
+    except Exception as e:
+        print(f"Error processing text: {e}")
+        return None
+
+
 
 
 #.......Functions for OpenAI ........
@@ -448,61 +448,69 @@ def query_openai(prompt):
 def create_analysis_prompt(checklist_items, contract_text):
     prompt_text = {
     "question": f"Analyze the uploaded contract agreement  {contract_text} and determine the if the uploaded checklist items {checklist_items}  are fulfilled/satisfaction for each checklist item from the {checklist_items}. ",
-    "context": f"You are a smart legal Assistant responsible  for analyzing and verifying if the contractual document text fulfills the checklist criteria with the checklist items {checklist_items}.",
+    "context": f"As a smart legal Assistant, your responsibility is to thoroughly analyze and confirm whether the document text fulfills the specified checklist criteria.",
     "information": "These are the details of output schema:"
                     'Item 1: provide the Checklist Item from uploaded Excel {checklist_items}": {\n'
-                    '    "S.No": "Same as checklist items",\n'
-                    f'    "Document type": "Same as from uploaded checklist excel file {checklist_items}",\n'
-                    '   "Status": "based on the analysis: (Satisfied/Not satisfied)",'
-                    f'    "Item type": "Item type from uploaded checklist excel file {checklist_items}",\n'
-                    f'    "Checklist Item": "Checklist Item from uploaded checklist excel file {checklist_items}",\n'
-                    f'    "Category": "category of checklist item from uploaded checklist excel file {checklist_items}",\n'
-                    f'    "Section Number": "section numbers from contract agreement  {contract_text} ",\n'
+                    '    "S.No": "Same as {checklist_items}",\n'
+                    f'   "Document type": "Same as the checklist uploaded in the Excel file {checklist_items}",\n'
+                    f'   "Category": "Category of checklist item from uploaded checklist excel file {checklist_items}",\n'
+                    f'   "SubCategory": "SubCategory from excel file {checklist_items}",\n'
+                    f'   "Checklist Item": "Checklist Item from uploaded checklist excel file {checklist_items}",\n'
+                    f'   "Item type": "Item type from uploaded checklist excel file {checklist_items}",\n'
+                    f'   "Priority": "Priority from uploaded checklist excel file {checklist_items}"\n'
+                    '    "Status": "based on the analysis: (Satisfied/Not satisfied)",'                    
+                    f'   "Section Number": "section numbers from contract agreement  {contract_text} ",\n'
                     '    "Analysis": "Your analysis here",\n'
                     '    "Suggestions": "Your suggested amendment here"\n'
-                    f'    "Priority": "Priority from uploaded checklist excel file {checklist_items}"\n'
+                    
                     '  },\n'
                     ,
-    "instruction":"Analyze each checklist item in detail, offering suggestions or improvements even if relevant clauses exist."
-                    '"Verify that the document aligns precisely with the checklist criteria and matches the number of items and categories in the uploaded Excel file."'
-                    '"Accurately specify the contract section numbers corresponding to each checklist item."'
+    "instruction":"Verify that the document aligns precisely with the checklist criteria"
+                    '"Analyze each checklist item in detail, offering suggestions or improvements"'
+                    '"Matche the number of items and categories in the uploaded Excel file."'
+                    '"Accurately specify the contract section numbers corresponding to each checklist item."' 
+                    'Confirm document adherence to checklist criteria: Include mandatory items marked "Inclusion," exclude those marked "Exclusion.'                   
                    
-    
-                  
+                   
+                   
                    
                    
                    '"Format the response in a structured JSON format with each item as a key, including analysis, suggestions, "'
                    ' "Do not include any other verbose explanations apart from the response format"'
                    ' Example of format with proper spacing:\n'
                    ' "Checklist Item 13: Other Commitments": {\n'
-                   ' "S.No": 13,\n'
+                   ' "S.No": "17",\n'
                     '"Document Type": "SoW",\n'
-                   ' "Status": "Satisfied",\n'
-                   ' "Section Number": null,\n'
                     '"Category": "Other Commitments",\n'
+                    '"SubCategory": "Warranty Duration",\n'
                     '"Checklist Item": "Warranty should not exceed 3 weeks",\n'
                    ' "Item type": "Inclusion",\n'
+                   ' "Priority": "Mandatory"\n'
+                   
+                   ' "Status": "Satisfied",\n'
+                   ' "Section Number": null,\n'                                      
                    ' "Analysis": "The contract agreement does not mention the duration of the warranty.",\n'
                    ' "Suggestions": "It is recommended to include a clause stating that the warranty should not exceed 3 weeks.",\n'
-                   ' "Priority": "Mandatory"\n'
+                   
                    '}\n'
-                   '{\n'
-                   '  "Checklist Item 1: Clause for pre-existing IP": {\n'
-                   '    "S.No": "1",\n'
-                   '    "Status": "Satisfied",\n'
-                   '    "Category": "Intellectual Property Rights",\n'
-                   '    "Section Number": "4.1.1",\n'
-                   '    "Analysis": "Your analysis here",\n'
-                   '    "Suggestions": "Your suggested amendment here"\n'
-                   '  },\n'
-                   '  "Checklist Item 2: Limitation of Liability should be limited": {\n'
-                   '    "S.No": "2",\n'
-                   '    "Status": "Not satisfied",\n'
-                   '    "Category": "Liability",\n'
-                   '    "Section Number": "6",\n'
-                   '    "Analysis": "Your analysis here",\n'
-                   '    "Suggestions": "Your suggested amendment here"\n'
-                   '  }\n'
+
+
+                    ' "Checklist Item 13: Clause for pre-existing IP": {\n'
+                   ' "S.No": "1",\n'
+                    '"Document Type": "MSA",\n'
+                    '"Category": "Intellectual Property Rights",\n'
+                    '"SubCategory": "Pre-existing IP Clause",\n'
+                    '"Checklist Item": " Is there a clause addressing the treatment of pre-existing intellectual property in the agreement?",\n'
+                   ' "Item type": "Inclusion",\n'
+                   ' "Priority": "Mandatory"\n'
+                   
+                   ' "Status": "Satisfied",\n'
+                   ' "Section Number": "4.1.1",\n'                                      
+                   ' "Analysis": "The contract agreement does not mention the duration of the warranty.",\n'
+                   ' "Suggestions": "It is recommended to include a clause stating that the warranty should not exceed 3 weeks.",\n'
+                   
+                   '}\n'   
+                   
                    '}\n\n'
     "ResponseFormat:\n"
                     'The extracted elements should be in the following JSON format: The output should be a\n'
@@ -513,14 +521,16 @@ def create_analysis_prompt(checklist_items, contract_text):
                     '  "Checklist Item 1: "string"//Checklist category": {\n'
                     '    "S.No": "integer"//,\n'
                     '    "Document Type": "string"// "Type of uploaded document",\n'
-                    '    "Status": "string"// "Satisfied/Not satisfied",\n'
-                    '    "Section Number":  "integer"//"If satisfied, provide the section number",\n'
                     '    "Category":  "string"//"category of checklist",\n'
+                    '    "SubCategory":  "string"//"SubCategory of checklist",\n'
                     '    "Checklist Item":  "string"//"Checklist Item",\n'
                     '    "Item type":  "string"//"Inclusion/Exclusion",\n'
+                    '    "Priority":  "string"//"Mandatory/Good to have"\n'
+                    '    "Status": "string"// "Satisfied/Not satisfied",\n'
+                    '    "Section Number":  "integer"//"If satisfied, provide the section number",\n'
                     '    "Analysis":  "string"//"Your analysis here",\n'
                     '    "Suggestions":  "string"//"Your suggested amendments here"\n'
-                    '    "Priority":  "string"//"Mandatory/Good to have"\n'
+                    
                     '  },\n'
                     '}'
                     '```'
@@ -537,6 +547,55 @@ def create_analysis_prompt(checklist_items, contract_text):
                                    "Begin your JSON analysis below:\n-----------------------------\n")
     return json.dumps(prompt_text)
 
+
+def parse_openai_response(response_text):
+    try:
+        # Find the index where the JSON content begins
+        json_start_index = response_text.find("{")
+        
+        # Check if JSON content is found
+        if json_start_index != -1:
+            # Extract the JSON content
+            json_content = response_text[json_start_index:]
+            
+            # Remove any trailing characters after the JSON
+            json_content = json_content.rstrip('\n').rstrip('```')
+            
+            # Parse the JSON
+            response_data = json.loads(json_content)
+        else:
+            raise ValueError("No JSON content found in the response.")
+    except json.JSONDecodeError as e:
+        print(f"Error parsing JSON: {e}")
+        return pd.DataFrame(columns=['S.No', 'Document Type','Category','SubCategory', 'Checklist Item', 'Item type','Priority', 'Status', 'Section Number',  'Analysis', 'Suggestions' ])
+
+    serial_no = 1
+    rows = []
+
+    for  item,details in response_data.items():
+        checklist_item_part = item.split(": ")[-1]
+        row = {
+             "S.No": details.get("S.No", ""),
+            "Document Type": details.get("Document Type", ""),
+            "Category": details.get("Category", ""),
+            "SubCategory": details.get("SubCategory", ""),
+            "Checklist Item": details.get("Checklist Item", ""),
+            "Item type": details.get("Item type", ""),
+            "Priority": details.get("Priority", ""),
+
+            "Status": details.get("Status", ""),
+            "Section Number": details.get("Section Number", "") if details.get("Section Number") is not None else "",
+            "Analysis": details.get("Analysis", ""),
+            "Suggestions": details.get("Suggestions", ""),
+            
+        }
+        print("checklist items:",checklist_item_part)
+        rows.append(row)
+        serial_no += 1
+
+    df = pd.DataFrame(rows)
+    print(df)
+    return df
 
 #.........callbacks.....
 
@@ -608,7 +667,7 @@ def update_collapsible_content(n_clicks, contract_contents, checklist_contents, 
         # Query OpenAI and print the response
         #response = query_openai(prompt)
         response, token_usage_info = query_openai(prompt)
-        #print("RESPONSE!!!",response)
+        print("RESPONSE!!!",response)
         end_time = time.time()  # Record the end time
         time_taken = end_time - start_time
         print(f"Time taken for OpenAI response: {time_taken} seconds")
@@ -638,7 +697,7 @@ def update_collapsible_content(n_clicks, contract_contents, checklist_contents, 
             df = analysis_results
             print("df after analysis:", df)
         else:
-            df = pd.DataFrame(columns=['S.No', 'Status', 'Category', 'Section Number', 'Analysis', 'Suggestions'])
+            df = pd.DataFrame(columns=['S.No', 'Document Type','Category','SubCategory', 'Checklist Item', 'Item type','Priority', 'Status', 'Section Number',  'Analysis', 'Suggestions' ])
         end_time = time.time()  # Record the end time
         time_taken = end_time - start_time
         print(f"Time taken for updating df : {time_taken} seconds")
@@ -649,6 +708,7 @@ def update_collapsible_content(n_clicks, contract_contents, checklist_contents, 
         # Extract information for display
         num_checklist_items = len(checklist_content_decoded)  # Example: Number of rows in the checklist dataframe
         num_satisfied = df[df['Status'] == 'Satisfied'].shape[0]  # Example: Count of 'Satisfied' rows in the result dataframe
+        print("num_satisfied",num_satisfied)
         num_unsatisfied = df[df['Status'] == 'Not satisfied'].shape[0]  # Example: Count of 'Unsatisfied' rows
         #num_SwithS = df[df['Status'] == 'Satisfied with suggestions'].shape[0] 
         # Extract page numbers from the contract agreement (assuming it's a PDF)
@@ -658,6 +718,16 @@ def update_collapsible_content(n_clicks, contract_contents, checklist_contents, 
         print("total_pages")
         print("total_pages",total_pages)
             
+        # Define the columns you want to include in the UI and their order
+        #desired_columns = ['S.No', 'Category', 'Checklist item', 'Section', 'Status', 'Analysis', 'Suggestions']
+
+        # Filter the DataFrame to include only the desired columns
+        filtered_df = df[['S.No', 'Category', 'Checklist Item', 'Section', 'Status', 'Analysis', 'Suggestions']]
+
+        print("filtered_df", filtered_df)
+
+
+
         # Further processing of the OpenAI response and updating the displayed content
         updated_content = html.Div(
                 children=[
@@ -674,14 +744,11 @@ def update_collapsible_content(n_clicks, contract_contents, checklist_contents, 
                                                    'width': '80%', 'margin': '0 auto 5px'}),
                                     html.Table(
                                         # Header
-                                        [html.Tr([html.Th(col, style={'font-size': '20px'}) for col in df.columns],
-                                                 style={'background-color': '#55a2bc', 'color': 'white',
-                                                        'text-align': 'center'})] +
+                                        [html.Tr([html.Th(col, style={'font-size': '20px'}) for col in filtered_df.columns],
+                                                style={'background-color': '#55a2bc', 'color': 'white', 'text-align': 'center'})] +
                                         # Body
-                                        [html.Tr([html.Td(value, style={'padding': '10px', 'border': f'1px solid {border_color}'})
-                                                  for value in row]) for row in df.values],
-                                        style={'width': '80%', 'margin': '0 auto', 'border-spacing': '0 10px',
-                                               'text-align': 'left'},  # Center the table, add gap between rows
+                                        [html.Tr([html.Td(value, style={'padding': '10px', 'border': f'1px solid {border_color}'}) for value in row]) for row in filtered_df.values],
+                                        style={'width': '80%', 'margin': '0 auto', 'border-spacing': '0 10px', 'text-align': 'left'},  # Center the table, add gap between rows
                                     ),
                                 ],
                                 style={'width': '97%', 'margin': '30px', 'text-align': 'center'}  # Center the entire content
@@ -696,8 +763,15 @@ def update_collapsible_content(n_clicks, contract_contents, checklist_contents, 
                             ),
                             html.Div(
                                     dcc.Markdown(
-                                        f"Document name : **{contract_filename}**",
-                                        style={'border': '2px solid #2c8bc3', 'margin': '0 auto', 'text-align': 'center', 'width': '185px'}),
+                                        f"Document name :\n **{contract_filename}**",
+                                        style={ 'color': 'rgb(22, 72, 99)',
+                                                ' font-size': 'larger',
+                                                'text-align': 'center',
+                                                'width': '90rem',
+                                                'margin': '1px auto 2px 13.3rem',
+                                                'border': '2px solid rgb(22, 72, 99)',
+                                                'z-index': '3',
+                                                'padding-top': '9px'}),
                                                     
                                 ),
                             # Pie Chart
@@ -710,20 +784,20 @@ def update_collapsible_content(n_clicks, contract_contents, checklist_contents, 
                                                     #     f"Contract File: **{contract_filename}**",
                                                     #     style={'border': '2px solid #2c8bc3', 'margin': '0 auto', 'text-align': 'center', 'width': '185px'}),
                                                     dcc.Markdown(
-                                                        f"Total number of pages in document: **{total_pages}**",
+                                                       "Total number of pages in document:\n\n" +f"**{total_pages}**",
                                                         style={'border': '2px solid #2c8bc3', 'margin': '0 auto', 'text-align': 'center', 'width': '185px'}),
                                                     dcc.Markdown(
-                                                        f"Number of Checklist Items: **{num_checklist_items}**",
+                                                        f"Number of Checklist Items:\n" +f" **{num_checklist_items}**",
                                                         style={'border': '2px solid #2c8bc3', 'margin': '0 auto', 'text-align': 'center', 'width': '185px'}),
                                                     dcc.Markdown(
-                                                        f"Number of Satisfied Items: **{num_satisfied}**",
+                                                        f"Number of Satisfied Items:\n" +f" **{num_satisfied}**",
                                                         style={'border': '2px solid #2c8bc3', 'margin': '0 auto', 'text-align': 'center', 'width': '185px'}),
                                                     dcc.Markdown(
-                                                        f"Number of Not Satisfied Items: **{num_unsatisfied}**",
+                                                        f"Number of Not Satisfied Items:\n" +f" **{num_unsatisfied}**",
                                                         style={'border': '2px solid #2c8bc3', 'margin': '0 auto', 'text-align': 'center', 'width': '185px'}),
                                                    
                                                 ],
-                                                style={'display': 'flex', 'flex-direction': 'row', 'align-items': 'center','margin-top': '10rem'}
+                                                style={'display': 'flex', 'flex-direction': 'row', 'align-items': 'center','margin-top': '2rem'}
                                             ),
                                    
                                    html.Div(
@@ -736,7 +810,7 @@ def update_collapsible_content(n_clicks, contract_contents, checklist_contents, 
                                                       'border': '2px dashed #00b8ff',
                                                       'position': 'relative',
                                                       'padding': '10px',
-                                                      'top': '55px',
+                                                      'top': '20px',
                                                       'z-index': '3'
                                                       }),
                                        style={'width': '97%', 'margin': '30px', 'text-align': 'center'}  # Center the entire content
@@ -764,7 +838,7 @@ def update_collapsible_content(n_clicks, contract_contents, checklist_contents, 
                                                 'margin': dict(t=0, b=0, l=0, r=0),
                                             },
                                         },
-                                        style={'height': '440px', 'position': 'relative', 'right': '10px', 'top': '60px'}
+                                        style={'height': '440px', 'position': 'relative', 'right': '15px', 'top': '45px'}
                                     ),
                                 ],
                                 style={'padding-left':' 194px',    'width': '90%',   ' margin-top': '50px',   ' text-align': 'center',    'height': '20px'}
@@ -930,13 +1004,13 @@ def download_excel(n_clicks):
     global df 
     # Exclude the index column from the Excel file
     df_no_index = df.copy().reset_index(drop=True)  # Copy the DataFrame and reset the index
-    return dcc.send_data_frame(df_no_index.to_excel, "mydf.xlsx", sheet_name="Sheet_name_1", index=False)
+    return dcc.send_data_frame(df_no_index.to_excel, "Analysis_Results.xlsx", sheet_name="Sheet_name_1", index=False)
 
 
 
 
 if __name__ == '__main__':
-    app.run_server(debug=True, port='5000')
+    app.run_server(debug=False, port='2000')
     
     
     
